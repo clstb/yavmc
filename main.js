@@ -48,35 +48,59 @@ yargs.options({
     }
 });
 
-// if psnr log path is set the psnr filter is executed
-if (yargs.argv.psnr_log != '') {
-    psnr(yargs.argv.base, yargs.argv.encoded, yargs.argv.psnr_log, yargs.argv.verbose);
-}
+let getResolution = (file) => {
+    return new Promise(resolve => {
+        ffmpeg(file).ffprobe(function (err, metadata) {
+            resolve({width: metadata.streams[0].width, height: metadata.streams[0].height});
+        })
+    })
+};
 
-// if vmaf log path is set the vmaf filter is executed
-if (yargs.argv.vmaf_log != '') {
-    vmaf(yargs.argv.base, yargs.argv.encoded, yargs.argv.vmaf_log, yargs.argv.verbose);
-}
-
-getResolution(yargs.argv.base);
-getResolution(yargs.argv.encoded);
-
-function getResolution(file) {
-    ffmpeg.ffprobe(file, function(err , metadata){
-        console.dir(metadata);
+let upscale = (file, width, height, out, verbose) => {
+    return new Promise(resolve => {
+        let resOptions = `-s ${width}x${height}`; // parse resolution
+        let command = ffmpeg(); // create raw command
+        // define command and run
+        command.on('start', function (commandLine) {
+            console.debug('Spawned FFmpeg with command:\n' + chalk.default.blue(commandLine));
+        })
+        .on('progress', function (progress) {
+            if (verbose === true)  {
+                console.log('Upscaling: %d % done'.replace('%d', progress.percent));
+            }
+        })
+        .on('error', function (err) {
+            console.log('An error occures: ' + err.message);
+            resolve();
+        })
+        .on('end', function () {
+            console.log('Upscaling done!');
+            resolve();
+        })
+        .input(file)
+        .addOption('-y')
+        .addOption('-pix_fmt')
+        .addOption('yuv420p') // video format
+        .addOption('-vsync 0') // vsync
+        .addOption(resOptions) // resolution option
+        .addOption('-sws_flags')
+        .addOption('lanczos')
+        .output(out)
+        .run(); // run command
     });
-}
+};
 
 // vmaf runs the ffmpeg vmaf filter command
-function vmaf(base, encoded, logPath, verbose) {
+let vmaf = (base, encoded, logPath, verbose) => {
     // build filter string
     let filter = 'libvmaf=model_path=/usr/share/model/vmaf_v0.6.1.pkl:log_fmt=json:log_path=%s'.replace('%s', logPath);
-    // create raw command
-    let command = ffmpeg();
-    // define command and run
-    command.on('start', function (commandLine) { // executes when the command starts
-        console.debug('Spawned FFmpeg with command:\n' + chalk.default.blue(commandLine));
-    })
+    return new Promise(resolve => {
+        // create raw command
+        let command = ffmpeg();
+        // define command and run
+        command.on('start', function (commandLine) { // executes when the command starts
+            console.debug('Spawned FFmpeg with command:\n' + chalk.default.blue(commandLine));
+        })
         .on('progress', function (progress) { // executes when the command progresses
             if (verbose === true) {
                 console.log('Processing VMAF: %d % done'.replace('%d', progress.percent));
@@ -84,10 +108,12 @@ function vmaf(base, encoded, logPath, verbose) {
         })
         .on('error', function (err) { // executes when the command errors
             console.log('An error occurred: ' + err.message);
+            resolve();
         })
         .on('end', function () { // executes when the command ends
             let metrics = processVMAFLog(logPath);
             console.log('VMAF: %d'.replace('%d', metrics.vmaf));
+            resolve();
         })
         .input(base) // base video file
         .input(encoded) // encoded video file
@@ -95,19 +121,21 @@ function vmaf(base, encoded, logPath, verbose) {
         .addOption(filter) // add filter option
         .addOption('-f', 'null') // pipe console output to a void
         .output('-')
-        .run(); // run commmand
-}
+        .run(); // run command
+    });
+};
 
 // psnr runs the ffmpeg psnr filter command
-function psnr(base, encoded, logPath, verbose) {
+let psnr = (base, encoded, logPath, verbose) => {
     // build filter string
     let filter = 'psnr=%s'.replace('%s', logPath);
-    // create raw command
-    let command = ffmpeg();
-    // define command and run
-    command.on('start', function (commandLine) { // executes when the command starts
-        console.debug('Spawned FFmpeg with command:\n' + chalk.default.blue(commandLine));
-    })
+    return new Promise(resolve => {
+        // create raw command
+        let command = ffmpeg();
+        // define command and run
+        command.on('start', function (commandLine) { // executes when the command starts
+            console.debug('Spawned FFmpeg with command:\n' + chalk.default.blue(commandLine));
+        })
         .on('progress', function (progress) { // executes when the command progresses
             if (verbose === true) {
                 console.log('Processing PSNR: %d % done'.replace('%d', progress.percent));
@@ -115,11 +143,13 @@ function psnr(base, encoded, logPath, verbose) {
         })
         .on('error', function (err) { // executes when the command errors
             console.log('An error occured: ' + err.message);
+            resolve();
         })
         .on('end', function (err, stdout, stderr) { // executes when the command ends
             let regex = /y:([^\s]+)/;
             let psnr = stdout.match(regex);
             console.log('PSNR: %d'.replace('%d', psnr[1]));
+            resolve();
         })
         .input(base) // base video file
         .input(encoded) // encoded video file
@@ -128,7 +158,8 @@ function psnr(base, encoded, logPath, verbose) {
         .addOption('-f', 'null') // pipe console output to a void
         .output('-')
         .run() // run command
-}
+    });
+};
 
 // processVMAFLog extracts the vmaf score from the vmaf log file
 function processVMAFLog(path) {
@@ -144,3 +175,17 @@ function processVMAFLog(path) {
         vmaf: vmaf / log.frames.length,
     };
 }
+
+(
+    async () => {
+        let resolution = await getResolution(yargs.argv.base);
+        await upscale(yargs.argv.encoded, resolution.width, resolution.height, 'upscaled.y4m', yargs.argv.verbose);
+        if (yargs.argv.psnr_log != '') {
+            await psnr(yargs.argv.base, 'upscaled.y4m', yargs.argv.psnr_log, yargs.argv.verbose);
+        }
+        if (yargs.argv.vmaf_log != '') {
+            await vmaf(yargs.argv.base, 'upscaled.y4m', yargs.argv.psnr_log, yargs.argv.verbose);
+        }
+    }
+)();
+
