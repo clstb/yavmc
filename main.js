@@ -48,6 +48,7 @@ yargs.options({
     }
 });
 
+// getResolution extracts width and height of a provided video file
 let getResolution = (file) => {
     return new Promise(resolve => {
         ffmpeg(file).ffprobe(function (err, metadata) {
@@ -56,6 +57,7 @@ let getResolution = (file) => {
     })
 };
 
+// upscale reformats the video file to the desired resolution, this may take a lot of disk space
 let upscale = (file, width, height, out, verbose) => {
     return new Promise(resolve => {
         let resOptions = `-s ${width}x${height}`; // parse resolution
@@ -167,7 +169,7 @@ function processVMAFLog(path) {
     let log = JSON.parse(data);
 
     let vmaf = 0;
-    for (var frame of log.frames) {
+    for (let frame of log.frames) {
         vmaf += frame.metrics.vmaf;
     }
 
